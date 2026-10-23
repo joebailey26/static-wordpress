@@ -39,6 +39,7 @@ Sections, their order and their public `path` come from the CMS (`cms.config.jso
 
 ```js
 const { data: pages } = await useCmsIndex('blog')      // [[summary, …], …] pages of post summaries, no content
+const { data: testimonials } = await useCmsIndex('testimonials', { content: true })  // summaries plus content
 const post = await useCmsPost('blog', route.params.slug, { notFound: 'Post not found' })
 ```
 

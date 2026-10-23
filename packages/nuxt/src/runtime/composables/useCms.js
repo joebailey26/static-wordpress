@@ -5,9 +5,10 @@ import { createError, useAsyncData } from '#imports'
 
 const withDates = (post) => ({ ...post, date: new Date(post.date), modified: post.modified ? new Date(post.modified) : null })
 
-// The paginated post summaries of a section.
-export function useCmsIndex (section) {
-  return useAsyncData(`cms-${section}`, () => $fetch(`/_content/${section}`), {
+// The paginated post summaries of a section. `content: true` includes each post's HTML, for sections shown
+// whole on another page (testimonials, for example).
+export function useCmsIndex (section, { content = false } = {}) {
+  return useAsyncData(content ? `cms-${section}-content` : `cms-${section}`, () => $fetch(`/_content/${section}`, { query: content ? { content: 'true' } : {} }), {
     transform: (pages) => pages.map((page) => page.map(withDates)),
     default: () => []
   })

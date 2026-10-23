@@ -1,5 +1,9 @@
-import { defineEventHandler } from 'h3'
+import { defineEventHandler, getQuery } from 'h3'
 import { getSection } from '../content.js'
 
-// The paginated post summaries for an index page, without the post content.
-export default defineEventHandler((event) => getSection(event).map((page) => page.map(({ content: _content, rawDate: _rawDate, ...summary }) => summary)))
+// The paginated posts of an index page: summaries without the post content, unless ?content=true.
+export default defineEventHandler((event) => {
+  const withContent = getQuery(event).content === 'true'
+
+  return getSection(event).map((page) => page.map(({ content, rawDate: _rawDate, ...summary }) => (withContent ? { ...summary, content } : summary)))
+})
