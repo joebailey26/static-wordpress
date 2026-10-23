@@ -1,0 +1,60 @@
+{
+  "name": "@joebailey26/static-wordpress",
+  "version": "0.1.0",
+  "description": "WordPress Playground editor on a Cloudflare Worker (D1 snapshots, R2 media) with a build-token content feed",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joebailey26/static-wordpress.git",
+    "directory": "packages/cms"
+  },
+  "type": "module",
+  "bin": {
+    "static-wordpress": "bin/static-wordpress.mjs"
+  },
+  "exports": {
+    "./worker": "./src/worker.mjs",
+    "./config": "./src/config.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "src",
+    "web",
+    "wordpress",
+    "scripts",
+    "migrations",
+    "runtime.lock.json",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test --test-isolation=none test/*.test.mjs",
+    "check": "node --check src/worker.mjs && node --check web/editor.js && node --check bin/static-wordpress.mjs",
+    "test:runtime": "node bin/static-wordpress.mjs build:ci --root test/site && node bin/static-wordpress.mjs test:wordpress --root test/site"
+  },
+  "dependencies": {
+    "@php-wasm/progress": "3.1.60",
+    "@wp-playground/blueprints": "3.1.60",
+    "@wp-playground/client": "3.1.60",
+    "cheerio": "1.1.2",
+    "esbuild": "0.25.12",
+    "fflate": "0.8.2",
+    "jose": "6.1.3",
+    "yauzl": "3.2.0"
+  },
+  "peerDependencies": {
+    "wrangler": "^4.151.3"
+  },
+  "devDependencies": {
+    "@php-wasm/node": "3.1.60",
+    "@wp-playground/cli": "3.1.60",
+    "playwright": "1.64.1",
+    "wrangler": "4.151.3",
+    "sharp": "0.34.5"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "engines": {
+    "node": "^24.18.0"
+  }
+}

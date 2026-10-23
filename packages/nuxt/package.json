@@ -1,0 +1,33 @@
+{
+  "name": "@joebailey26/nuxt-static-wordpress",
+  "version": "0.1.0",
+  "description": "Nuxt module that loads a static-wordpress CMS feed at build time, with Cloudflare Image Transformations",
+  "repository": { "type": "git", "url": "https://github.com/joebailey26/static-wordpress.git", "directory": "packages/nuxt" },
+  "type": "module",
+  "exports": {
+    ".": "./src/module.js",
+    "./images": "./src/images.js",
+    "./feed": "./src/feed.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["src", "README.md"],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/module.js"
+  },
+  "dependencies": {
+    "@nuxt/kit": "^4.6.2",
+    "cheerio": "^1.1.2",
+    "he": "^1.2.0",
+    "striptags": "^3.2.0"
+  },
+  "peerDependencies": {
+    "@torchlight-api/client": "^0.0.4",
+    "nuxt": "^4.6.2"
+  },
+  "peerDependenciesMeta": {
+    "@torchlight-api/client": { "optional": true }
+  },
+  "publishConfig": { "registry": "https://npm.pkg.github.com" },
+  "engines": { "node": "^24.18.0" }
+}

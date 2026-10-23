@@ -1,0 +1,19 @@
+{
+  "id": "example",
+  "name": "Example",
+  "siteUrl": "https://example.com",
+  "sections": [
+    { "name": "blog", "label": "Blog" },
+    { "name": "projects", "label": "Projects" }
+  ],
+  "fieldGroups": [
+    {
+      "title": "Project details",
+      "fields": [
+        { "key": "project_url", "label": "Project URL", "type": "url" },
+        { "key": "github", "label": "Repository URL", "type": "url" },
+        { "key": "icons", "label": "Technology icons", "type": "checkboxes", "options": ["PHP", "Vue"] }
+      ]
+    }
+  ]
+}

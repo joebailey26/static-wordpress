@@ -1,0 +1,19 @@
+{
+  "name": "static-wordpress-monorepo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "pnpm -r test",
+    "check": "pnpm -r check",
+    "changeset": "changeset",
+    "release": "changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.7"
+  },
+  "engines": {
+    "node": "^24.18.0",
+    "pnpm": "^10.11.1"
+  },
+  "packageManager": "pnpm@10.11.1"
+}
