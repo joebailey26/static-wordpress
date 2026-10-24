@@ -91,6 +91,14 @@ try {
     assert.equal(restored.admins, 1);
     assert.equal(restored.records.length, 2);
     assert.equal((await second.run('echo get_stylesheet();')).trim(), theme);
+    // A snapshot saved with an older WordPress (here 6.7's schema version) is upgraded once, keeping its content.
+    assert.equal((await second.run('echo static_wordpress_upgrade_database() ? "upgraded" : "current";')).trim(), 'current');
+    await second.run("update_option('db_version', 58975);");
+    assert.equal((await second.run('echo static_wordpress_upgrade_database() ? "upgraded" : "current";')).trim(), 'upgraded');
+    const upgraded = JSON.parse(await second.run(`echo wp_json_encode(array('version' => (int) get_option('db_version'), 'expected' => $GLOBALS['wp_db_version'], 'records' => count(${capture}['records'])), JSON_THROW_ON_ERROR);`));
+    assert.equal(upgraded.version, upgraded.expected);
+    assert.equal(upgraded.records, 2);
+    assert.equal((await second.run('echo static_wordpress_upgrade_database() ? "upgraded" : "current";')).trim(), 'current');
     second.php.writeFile('/tmp/static-wordpress-login', 'one-time-login');
     const login = await second.handler.request({ url: '/?static_wordpress_login=one-time-login' });
     assert.equal(login.httpStatusCode, 200);
@@ -138,7 +146,7 @@ try {
     await second.run("apply_filters('wp_delete_file', wp_get_upload_dir()['basedir'] . '/2026/virtual.jpg');");
     assert.deepEqual(Object.keys(JSON.parse(second.php.readFileAsText('/tmp/static-wordpress-virtual.json')).files), ['uploads/2026/virtual-300x200.jpg']);
     console.log('PASS: saved uploads redirect to R2, stay in the manifest until deleted, and image edits request the original files.');
-    console.log('PASS: full database restore preserves drafts, settings, users, rendered posts and project fields; restored WordPress admin login works.');
+    console.log('PASS: full database restore preserves drafts, settings, users, rendered posts and project fields; an older database is upgraded once; restored WordPress admin login works.');
     console.log('PASS: minimal three-file theme preserves rendered content, featured-image support and wide blocks after snapshot restoration.');
     console.log('PASS: migration preserves dates, drafts, serialized and repeated custom fields, attachment mappings and media URLs; reimport is idempotent.');
   } finally { second.php.exit(); }

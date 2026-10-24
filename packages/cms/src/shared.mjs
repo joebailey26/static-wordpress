@@ -5,6 +5,27 @@ export const MAX_DATABASE_SIZE = 128 * 1024 * 1024;
 export const MAX_FILE_SIZE = 50 * 1024 * 1024;
 export const HASH = /^[a-f0-9]{64}$/;
 export const REVISION = /^[a-f0-9-]{36}$/;
+// The PHP version the editor runs. Snapshots from older supported versions restore unchanged: the SQLite
+// database does not depend on the PHP version.
+export const PHP_VERSION = '8.5';
+export const SUPPORTED_PHP = ['8.3', '8.4', '8.5'];
+const VERSION = /^\d+(\.\d+){1,2}$/;
+
+// Compares dotted version numbers (7.0, 7.0.8): negative when a is older than b, 0 when equal, positive when newer.
+export function compareVersions(a, b) {
+  const left = String(a).split('.').map(Number), right = String(b).split('.').map(Number);
+  for (let index = 0; index < Math.max(left.length, right.length); index++) {
+    const difference = (left[index] || 0) - (right[index] || 0);
+    if (difference) return Math.sign(difference);
+  }
+  return 0;
+}
+
+// A snapshot opens on the WordPress it was saved with or a newer one, whose database upgrade then runs.
+// WordPress cannot run on a database from a newer release, so a downgrade is refused.
+export function canOpenSnapshot(snapshotVersion, runtimeVersion) {
+  return compareVersions(snapshotVersion, runtimeVersion) <= 0;
+}
 
 export async function sha256(bytes) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), n => n.toString(16).padStart(2, '0')).join('');
@@ -33,8 +54,9 @@ function manifestCategories(manifest) {
 
 export function validateManifest(manifest, config) {
   assert(manifest && manifest.version === 1, 'Unsupported snapshot version');
-  assert(manifest.runtime === '3.1.60' && ['8.3', '8.5'].includes(manifest.php), 'Unsupported runtime');
-  assert(typeof manifest.wordpress === 'string' && /^\d+\.\d+(\.\d+)?$/.test(manifest.wordpress), 'Missing WordPress version');
+  // runtime records the Playground build a snapshot was saved with; any later build can restore it.
+  assert(typeof manifest.runtime === 'string' && VERSION.test(manifest.runtime) && SUPPORTED_PHP.includes(manifest.php), 'Unsupported runtime');
+  assert(typeof manifest.wordpress === 'string' && VERSION.test(manifest.wordpress), 'Missing WordPress version');
   assert(Number.isSafeInteger(manifest.databaseSize) && manifest.databaseSize > 0 && manifest.databaseSize <= MAX_DATABASE_SIZE, 'Database exceeds 128 MiB limit');
   assert(HASH.test(manifest.databaseHash), 'Invalid database checksum');
   assert(Array.isArray(manifest.chunks) && manifest.chunks.length === Math.ceil(manifest.databaseSize / CHUNK_SIZE) && manifest.chunks.every(hash => HASH.test(hash)), 'Invalid database chunks');

@@ -213,6 +213,19 @@ add_action('save_post_post', function ($post_id) {
     }
 });
 
+// Runs core's database upgrade when a snapshot from an older WordPress is opened with a newer runtime.
+// Returns whether anything changed. Downgrades never reach here: the editor refuses them.
+function static_wordpress_upgrade_database() {
+    global $wp_db_version;
+    if ((int) get_option('db_version') >= (int) $wp_db_version) {
+        return false;
+    }
+    require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+    wp_upgrade();
+    wp_cache_flush();
+    return (int) get_option('db_version') === (int) $wp_db_version;
+}
+
 function static_wordpress_database_path() {
     global $wpdb;
     if (method_exists($wpdb, 'get_driver')) {

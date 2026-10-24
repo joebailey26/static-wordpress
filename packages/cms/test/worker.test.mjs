@@ -245,3 +245,22 @@ test('site configuration is validated before the Worker starts', () => {
   assert.throws(() => defineConfig({ ...fixtureConfig('projects'), sections: [{ name: 'blog', path: 'blog' }] }), /path/);
   assert.equal(defineConfig(fixtureConfig('projects')).sections[0].category, 'blog');
 });
+
+test('snapshots open on the same or a newer WordPress, never an older one', async () => {
+  const { compareVersions, canOpenSnapshot } = await import('../src/shared.mjs');
+  assert.equal(compareVersions('7.0.7', '7.0.8'), -1);
+  assert.equal(compareVersions('7.0', '7.0.0'), 0);
+  assert.equal(compareVersions('7.10', '7.9.9'), 1);
+  assert.equal(canOpenSnapshot('7.0.7', '7.0.8'), true);
+  assert.equal(canOpenSnapshot('6.8.3', '7.0.7'), true);
+  assert.equal(canOpenSnapshot('7.0.7', '7.0.7'), true);
+  assert.equal(canOpenSnapshot('7.1', '7.0.7'), false);
+});
+
+test('manifests from any Playground build and supported PHP validate; other PHP versions do not', () => {
+  const config = defineConfig(fixtureConfig('projects'));
+  const base = { version: 1, wordpress: '7.0.7', databaseSize: 1, databaseHash: 'a'.repeat(64), chunks: ['a'.repeat(64)], files: [], counts: { blog: 0, projects: 0 }, sections: { blog: 'blog', projects: 'projects' } };
+  for (const [runtime, php] of [['3.1.60', '8.3'], ['3.2.4', '8.5'], ['3.2.4', '8.4']]) validateManifest({ ...base, runtime, php }, config);
+  assert.throws(() => validateManifest({ ...base, runtime: '3.2.4', php: '7.4' }, config), /Unsupported runtime/);
+  assert.throws(() => validateManifest({ ...base, runtime: 'latest', php: '8.5' }, config), /Unsupported runtime/);
+});

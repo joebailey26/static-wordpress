@@ -7,6 +7,7 @@ import { tarEntries } from './tar.mjs';
 import { prepareAccessCompatibleRuntime } from './runtime-compat.mjs';
 import { preparedRuntime } from './runtime-archive.mjs';
 import { packageRoot, siteConfig, siteRoot } from './site.mjs';
+import { PHP_VERSION } from '../src/shared.mjs';
 
 const root = siteRoot();
 const config = await siteConfig(root);
@@ -66,5 +67,5 @@ const core = tarEntries(zstdDecompressSync(await readFile(join(assets, 'assets',
 const versionFile = [...core.entries()].find(([path]) => path.endsWith('wp-includes/version.php'))?.[1];
 const exactVersion = new TextDecoder().decode(versionFile).match(/\$wp_version\s*=\s*'([^']+)'/)?.[1];
 if (!exactVersion) throw new Error('Could not identify the pinned WordPress version');
-await writeFile(join(output, 'runtime.json'), JSON.stringify({ playground: lock.playground, wordpress: exactVersion, php: '8.5', coreFile: `assets/${coreFile}`, artifactSha256: lock.artifactSha256 }));
+await writeFile(join(output, 'runtime.json'), JSON.stringify({ playground: lock.playground, wordpress: exactVersion, php: PHP_VERSION, coreFile: `assets/${coreFile}`, artifactSha256: lock.artifactSha256 }));
 console.log(`CMS built with pinned Playground ${lock.playground}, WordPress ${wordpress}. ${Object.keys(objects).length} large runtime files require R2 upload.`);

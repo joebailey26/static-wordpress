@@ -1,7 +1,7 @@
 import { startPlaygroundWeb } from '@wp-playground/client';
 import { ProgressTracker } from '@php-wasm/progress';
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
-import { CHUNK_SIZE, sha256, validateManifest, safePath, rewriteRecords } from '../src/shared.mjs';
+import { CHUNK_SIZE, PHP_VERSION, sha256, validateManifest, safePath, rewriteRecords, canOpenSnapshot } from '../src/shared.mjs';
 import { recovery } from './recovery.js';
 import { headlessTheme, headlessThemeFiles, isRetiredThemeFile } from './headless-theme.js';
 
@@ -16,7 +16,9 @@ const $ = id => document.getElementById(id);
 let client, lease, revision = null, busy = false, lostLease = false;
 let dirtyToken = '', syncTimer, renewTimer, pollTimer, pending;
 let unsyncedChanges = false;
-let themeMigrationPending = false;
+// The theme or the database changed while opening (a runtime upgrade), so the next sync must save it.
+let migrationPending = false;
+let runtime;
 let autoSyncPaused = false;
 let savedVersions = [];
 const leaseKey = `${config.id}-cms-lease`;
@@ -151,7 +153,7 @@ async function captureLocked() {
   const records = rewriteRecords(exported, files, location.origin, config);
   const chunks = [];
   for (let position = 0; position < database.length; position += CHUNK_SIZE) chunks.push(await sha256(database.subarray(position, position + CHUNK_SIZE)));
-  const manifest = validateManifest({ version: 1, runtime: '3.1.60', php: '8.5', wordpress: exported.wordpress, databaseSize: database.length, databaseHash: await sha256(database), chunks, files: files.map(file => ({ path: file.path, hash: file.hash, size: file.size, kind: file.kind, type: file.type })), sections: categoryMap, counts: Object.fromEntries(config.sections.map(({ name }) => [name, records.filter(post => post.section === name).length])) }, config);
+  const manifest = validateManifest({ version: 1, runtime: runtime.playground, php: PHP_VERSION, wordpress: exported.wordpress, databaseSize: database.length, databaseHash: await sha256(database), chunks, files: files.map(file => ({ path: file.path, hash: file.hash, size: file.size, kind: file.kind, type: file.type })), sections: categoryMap, counts: Object.fromEntries(config.sections.map(({ name }) => [name, records.filter(post => post.section === name).length])) }, config);
   return { manifest, database, files, records, baseRevision: revision, dirtyToken: exported.dirtyToken };
 }
 
@@ -189,7 +191,7 @@ async function checkpoint() {
     revision = committed.revision;
     dirtyToken = pending.dirtyToken;
     unsyncedChanges = false;
-    themeMigrationPending = false;
+    migrationPending = false;
     await recovery('delete');
     pending = null;
     notice('');
@@ -225,10 +227,21 @@ async function prepareHeadlessTheme(manifest) {
   const retired = '/wordpress/wp-content/themes/twentytwentyfive';
   if (await client.isDir(retired)) await client.rmdir(retired, { recursive: true });
   if (switched.trim() === 'switched' || changedFiles || manifest?.files.some(file => isRetiredThemeFile(file.path))) {
-    themeMigrationPending = true;
-    unsyncedChanges = true;
-    await client.writeFile('/tmp/static-wordpress-dirty', crypto.randomUUID());
+    markMigrated();
   }
+}
+
+function markMigrated() {
+  migrationPending = true;
+  unsyncedChanges = true;
+  return client.writeFile('/tmp/static-wordpress-dirty', crypto.randomUUID());
+}
+
+// A snapshot saved with an older WordPress gets core's database upgrade, exactly as wp-admin/upgrade.php would run it.
+async function upgradeDatabase() {
+  if ((await php('echo static_wordpress_upgrade_database() ? "upgraded" : "current";')).trim() !== 'upgraded') return;
+  await markMigrated();
+  notice('WordPress updated this site\'s database for the new version. Sync to save it; earlier versions stay under Saved versions.');
 }
 
 async function restore(checkpoint) {
@@ -263,6 +276,8 @@ async function restore(checkpoint) {
   // Each PHP run closes its PDO connection. Replace the DB only between requests.
   await client.writeFile(target, checkpoint.database);
   for (const suffix of ['-wal', '-shm']) if (await client.fileExists(target + suffix)) await client.unlink(target + suffix);
+  showProgress('Restoring the database', 'Checking the database is up to date…');
+  await upgradeDatabase();
   await prepareHeadlessTheme(checkpoint.manifest);
   await php("wp_cache_flush(); wp_set_current_user(get_users(array('role' => 'administrator', 'number' => 1))[0]->ID);");
 }
@@ -389,15 +404,15 @@ async function boot(snapshot, local) {
   if (!loadingActive) startLoading();
   setStatus('Loading WordPress…');
   if (snapshot?.committed_at) $('last-synced').textContent = `Last synced ${new Date(snapshot.committed_at * 1000).toLocaleString('en-GB')}`;
-  const runtime = await (await api('/runtime.json')).json();
-  if (snapshot && snapshot.manifest.wordpress !== runtime.wordpress) throw new Error('The saved database requires a different WordPress runtime. Restore the matching pinned runtime before editing.');
+  runtime = await (await api('/runtime.json')).json();
+  if (snapshot && !canOpenSnapshot(snapshot.manifest.wordpress, runtime.wordpress)) throw new Error(`This site was saved with WordPress ${snapshot.manifest.wordpress}, newer than this editor's ${runtime.wordpress}. Deploy the CMS with the newer runtime before editing.`);
   const progressTracker = new ProgressTracker();
   progressTracker.addEventListener('progress', event => showProgress('Starting WordPress', event.detail.caption || 'Downloading PHP and preparing WordPress…', event.detail.progress));
   showProgress('Starting WordPress', 'Downloading PHP and preparing WordPress…');
   client = await startupStep(startPlaygroundWeb({
     iframe: $('wordpress'), remoteUrl: `${location.origin}/remote.html`, scope: `${config.id}-cms`,
     progressTracker, detailedProgressCaptions: true,
-    blueprint: { landingPage: '/', preferredVersions: { php: '8.5', wp: runtime.wordpress.split('.').slice(0, 2).join('.') }, login: false, features: { networking: false }, constants: { DISABLE_WP_CRON: true, WP_AUTO_UPDATE_CORE: false } }
+    blueprint: { landingPage: '/', preferredVersions: { php: PHP_VERSION, wp: runtime.wordpress.split('.').slice(0, 2).join('.') }, login: false, features: { networking: false }, constants: { DISABLE_WP_CRON: true, WP_AUTO_UPDATE_CORE: false } }
   }), 'WordPress startup did not finish within two minutes. Reload to retry; your committed cloud snapshot is safe.');
   showProgress('Preparing saved content', 'Installing the CMS bridge…');
   await client.mkdir('/wordpress/wp-content/mu-plugins').catch(() => {});
@@ -428,8 +443,8 @@ async function boot(snapshot, local) {
   $('sync').disabled = false;
   setStatus(local ? 'Local changes restored — sync to save to Cloudflare' : 'Ready');
   dirtyToken = (await client.fileExists('/tmp/static-wordpress-dirty')) ? await client.readFileAsText('/tmp/static-wordpress-dirty') : '';
-  if (local || themeMigrationPending) dirtyToken = '';
-  unsyncedChanges = Boolean(local) || themeMigrationPending;
+  if (local || migrationPending) dirtyToken = '';
+  unsyncedChanges = Boolean(local) || migrationPending;
   const detectChanges = async () => {
     const token = await client.fileExists('/tmp/static-wordpress-dirty') ? await client.readFileAsText('/tmp/static-wordpress-dirty') : '';
     unsyncedChanges = token !== dirtyToken || Boolean(pending);
@@ -515,7 +530,7 @@ $('import').onchange = async event => {
     if (entries['manifest.json'] && entries['database.sqlite']) {
       const manifest = validateManifest(JSON.parse(strFromU8(entries['manifest.json'])), config);
       const current = JSON.parse(await php('echo wp_json_encode(array("wordpress" => $GLOBALS["wp_version"]));'));
-      if (manifest.wordpress !== current.wordpress) throw new Error('Backup WordPress version does not match the pinned runtime');
+      if (!canOpenSnapshot(manifest.wordpress, current.wordpress)) throw new Error(`This backup was saved with WordPress ${manifest.wordpress}, newer than this editor's ${current.wordpress}`);
       const files = manifest.files.map(file => {
         const bytes = entries[`wp-content/${file.path}`];
         if (!bytes) throw new Error(`Backup is missing ${file.path}`);

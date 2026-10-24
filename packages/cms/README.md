@@ -95,7 +95,7 @@ The runtime command streams the pinned Playground archive (approximately 685 MiB
 
 Open the localhost address printed by Wrangler. `.dev.vars` enables a localhost-only authentication bypass (`LOCAL_DEV=true`); it cannot bypass Access on a deployed hostname. Use a local build token of at least 32 random characters.
 
-The runtime contains WordPress 7.0.7, PHP 8.5 (older 8.3 snapshots restore unchanged), its SQLite integration and Playground 3.1.60. They are restored together; changing WordPress or the SQLite driver requires a tested snapshot upgrade.
+The runtime contains WordPress 7.0.7, PHP 8.5, its SQLite integration and Playground 3.1.60. WordPress never updates itself in the editor (automatic updates, cron and networking are off); updates arrive as a new runtime in a package release (see [Updating WordPress and PHP](#updating-wordpress-and-php)).
 
 The build adapts Playground's bundled service worker to a classic script, because Chrome omits cookies on module service-worker script requests and Access would redirect them to login. The build fails if the expected upstream registration changes.
 
@@ -112,7 +112,17 @@ Configure the CMS Worker with root `/cms`, build command `pnpm run build:ci`, de
 
 Previews bind the preview database and bucket. The deploy script refuses production storage, a migrations config for another database, or preview builds that could trigger website builds: set `"CMS_TRIGGER_BUILDS": "false"` in `previews.vars`. All previews share the preview content and the single-editor lease. The five-minute cron applies to production only.
 
-To upgrade the runtime, publish a reviewed official archive under a new release tag on this repository and update the URL and checksum together. Never replace bytes behind an existing pinned URL.
+### Updating WordPress and PHP
+
+WordPress and PHP come from the pinned Playground build in `runtime.lock.json`. To update them:
+
+1. Publish a reviewed official Playground archive under a new release tag on this repository. Never replace the bytes behind an existing pinned URL.
+2. Update `runtime.lock.json` together: URL, checksum, Playground version, WordPress major and provenance. For a PHP change, update `PHP_VERSION` (and `SUPPORTED_PHP`) in `src/shared.mjs`.
+3. Run `pnpm run test:runtime` (CI runs it on Linux and Windows), release the package, and bump it in each site's `cms/package.json`; the CMS Workers Build redeploys the editor.
+
+Existing content needs no manual migration. A snapshot opens on the WordPress it was saved with or any newer one: after restoring, the editor runs core's database upgrade (`wp_upgrade()`, as `wp-admin/upgrade.php` would), shows a notice and marks the site unsynced, so the next sync saves the upgraded snapshot. The previous versions stay under **Saved versions** as the rollback. A snapshot from a newer WordPress than the editor's is refused, because WordPress cannot run on a newer database. The SQLite database does not depend on the PHP version, so snapshots from any supported PHP version restore unchanged.
+
+Plugins installed through the editor live in the snapshot and do not update themselves; upload a new version's ZIP in wp-admin and sync.
 
 ## Import existing content
 
