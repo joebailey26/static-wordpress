@@ -1,0 +1,11 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "example-cms-preview-migrations",
+  "account_id": "0000",
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "example-cms-preview",
+    "database_id": "preview-db",
+    "migrations_dir": "migrations"
+  }]
+}

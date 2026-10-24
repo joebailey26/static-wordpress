@@ -1,0 +1,15 @@
+{
+  "id": "agency",
+  "name": "Agency",
+  "siteUrl": "https://agency.example",
+  "sections": [
+    { "name": "blog", "category": "blog", "label": "Blog" },
+    { "name": "legal", "category": "legal", "label": "Legal" },
+    { "name": "portfolio", "category": "portfolio", "label": "Portfolio", "path": null },
+    { "name": "testimonials", "category": "testimonials", "label": "Testimonials", "path": null }
+  ],
+  "fieldGroups": [
+    { "title": "Portfolio", "fields": [{ "key": "link", "label": "Website", "type": "url" }] },
+    { "title": "SEO", "fields": [{ "key": "seo_description", "label": "Meta description", "type": "textarea" }] }
+  ]
+}
