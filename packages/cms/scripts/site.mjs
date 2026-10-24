@@ -23,5 +23,5 @@ export async function wranglerConfig(root, name = 'wrangler.jsonc') {
 
 // Wrangler is the site's dependency, so its version follows the site's lockfile.
 export function wranglerBin(root) {
-  return createRequire(join(root, 'package.json')).resolve('wrangler/bin/wrangler.js');
+  return join(dirname(createRequire(join(root, 'package.json')).resolve('wrangler/package.json')), 'bin/wrangler.js');
 }
