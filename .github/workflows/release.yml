@@ -7,6 +7,7 @@ on:
 
 concurrency:
   group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -31,7 +32,14 @@ jobs:
         if: github.ref != 'refs/heads/master'
         run: |
           for dir in packages/*; do
-            (cd "$dir" && npm version "$(node -p "require('./package.json').version")-next-${GITHUB_SHA::7}" --no-git-tag-version && pnpm publish --tag next --no-git-checks)
+            (
+              cd "$dir"
+              version="$(node -p "require('./package.json').version")-next-${GITHUB_SHA::7}"
+              name="$(node -p "require('./package.json').name")"
+              # A re-run for the same commit has nothing new to publish.
+              if npm view "$name@$version" version >/dev/null 2>&1; then echo "$name@$version already published"; exit 0; fi
+              npm version "$version" --no-git-tag-version && pnpm publish --tag next --no-git-checks
+            )
           done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
