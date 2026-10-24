@@ -28,6 +28,8 @@ jobs:
           scope: '@joebailey26'
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
+      # Packages publish their compiled dist/.
+      - run: pnpm run build
       - name: Publish prerelease
         if: github.ref != 'refs/heads/master'
         run: |

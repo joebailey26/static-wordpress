@@ -2,7 +2,7 @@
 
 Loads a [static-wordpress](../cms) CMS feed once per `nuxt generate`, prepares post HTML (Cloudflare Image Transformations, video markup, optional link favicons and Torchlight highlighting), and serves it to pages through `/_content` routes that prerendering bakes into each page's payload.
 
-```js
+```ts
 // nuxt.config.ts
 export default defineNuxtConfig({
   modules: ['@joebailey26/nuxt-static-wordpress'],
@@ -37,17 +37,23 @@ Sections, their order and their public `path` come from the CMS (`cms.config.jso
 
 ## Pages
 
-```js
+```ts
 const { data: pages } = await useCmsIndex('blog')      // [[summary, …], …] pages of post summaries, no content
 const { data: testimonials } = await useCmsIndex('testimonials', { content: true })  // summaries plus content
-const post = await useCmsPost('blog', route.params.slug, { notFound: 'Post not found' })
+const post = await useCmsPost('blog', String(route.params.slug), { notFound: 'Post not found' })
 ```
 
 A post has `title`, `excerpt.{raw,plain}`, `slug`, `date` and `modified` (Dates), `content` (HTML), `readingTime`, `acf` (the configured fields), `tags`, `author`, `featuredMediaUrl` (original CMS URL) and `featuredMedia` (absolute 1200px og:image URL).
 
+The module exports the types: `CmsPost` (from `useCmsPost`), `CmsPostSummary` and `CmsPostSummaryWithContent` (from `useCmsIndex`), `ModuleOptions`, `ContentRecord` (a CMS feed record) and `CmsSection`.
+
+```ts
+import type { CmsPost } from '@joebailey26/nuxt-static-wordpress'
+```
+
 ## Images
 
-```js
+```ts
 import { cdnImageUrl, imageSrcset, transformImageUrl } from '@joebailey26/nuxt-static-wordpress/images'
 ```
 

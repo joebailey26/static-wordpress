@@ -16,7 +16,12 @@ Packages are published to GitHub Packages. Consumers need `@joebailey26:registry
 ```powershell
 corepack enable
 pnpm install
+pnpm run lint
+pnpm run typecheck
+pnpm run build
 pnpm test
 ```
+
+Both packages are written in TypeScript and publish compiled JavaScript with type declarations from `dist/`. Tests and the CMS scripts run straight from the `.ts` sources with Node 24's type stripping, so source files use erasable TypeScript syntax only.
 
 Add a changeset (`pnpm changeset`) to PRs that change a package. Merging to `master` opens or publishes the release. Every push to another branch publishes `x.y.z-next-<sha>` prereleases under the `next` tag.

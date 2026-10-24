@@ -9,27 +9,35 @@
   },
   "type": "module",
   "bin": {
-    "static-wordpress": "bin/static-wordpress.mjs"
+    "static-wordpress": "dist/bin/static-wordpress.js"
   },
   "exports": {
-    "./worker": "./src/worker.mjs",
-    "./config": "./src/config.mjs",
+    "./worker": {
+      "types": "./dist/src/worker.d.ts",
+      "default": "./dist/src/worker.js"
+    },
+    "./config": {
+      "types": "./dist/src/config.d.ts",
+      "default": "./dist/src/config.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
-    "bin",
+    "dist",
     "src",
     "web",
+    "scripts/service-worker-policy.ts",
     "wordpress",
-    "scripts",
     "migrations",
     "runtime.lock.json",
     "README.md"
   ],
   "scripts": {
-    "test": "node --test --test-isolation=none test/*.test.mjs",
-    "check": "node --check src/worker.mjs && node --check web/editor.js && node --check bin/static-wordpress.mjs",
-    "test:runtime": "node bin/static-wordpress.mjs build:ci --root test/site && node bin/static-wordpress.mjs test:wordpress --root test/site"
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.web.json",
+    "test": "node --test --test-isolation=none test/*.test.ts",
+    "test:runtime": "node bin/static-wordpress.ts build:ci --root test/site && node bin/static-wordpress.ts test:wordpress --root test/site",
+    "prepack": "pnpm run build"
   },
   "dependencies": {
     "@php-wasm/progress": "3.1.60",
@@ -42,19 +50,30 @@
     "yauzl": "3.2.0"
   },
   "peerDependencies": {
-    "wrangler": "^4.151.3"
+    "wrangler": "^4.151.3",
+    "@cloudflare/workers-types": "^5.20261024.1"
   },
   "devDependencies": {
     "@php-wasm/node": "3.1.60",
     "@wp-playground/cli": "3.1.60",
     "playwright": "1.64.1",
     "wrangler": "4.151.3",
-    "sharp": "0.34.5"
+    "sharp": "0.34.5",
+    "@types/yauzl": "^2.10.3",
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3",
+    "@cloudflare/workers-types": "^5.20261024.1",
+    "@wp-playground/wordpress": "3.1.60"
   },
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
   "engines": {
     "node": "^24.18.0"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/workers-types": {
+      "optional": true
+    }
   }
 }

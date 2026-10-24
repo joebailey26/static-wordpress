@@ -11,23 +11,23 @@ cms/
   package.json                       depends on @joebailey26/static-wordpress and wrangler
   .npmrc                             GitHub Packages registry for @joebailey26
   cms.config.json                    sections and custom fields (below)
-  worker.mjs                         export default createCms(config)
+  worker.ts                          export default createCms(config)
   wrangler.jsonc                     Worker name, route, D1/R2 bindings, Access settings
   wrangler.preview-migrations.jsonc  Preview D1 database only
   access-policy.json                 Access allowlist, for reference
   .dev.vars.example
 ```
 
-`worker.mjs`:
+`worker.ts`:
 
-```js
+```ts
 import { createCms } from '@joebailey26/static-wordpress/worker'
 import config from './cms.config.json'
 
 export default createCms(config)
 ```
 
-In `wrangler.jsonc`, set `"main": "worker.mjs"`, `"assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": true, "html_handling": "none", "not_found_handling": "none" }` and point both D1 bindings' `migrations_dir` at `node_modules/@joebailey26/static-wordpress/migrations`.
+In `wrangler.jsonc`, set `"main": "worker.ts"`, `"assets": { "directory": "./dist", "binding": "ASSETS", "run_worker_first": true, "html_handling": "none", "not_found_handling": "none" }` and point both D1 bindings' `migrations_dir` at `node_modules/@joebailey26/static-wordpress/migrations`.
 
 `package.json` scripts call the `static-wordpress` CLI, which runs against the current directory (or `--root <dir>`):
 
@@ -117,7 +117,7 @@ Previews bind the preview database and bucket. The deploy script refuses product
 WordPress and PHP come from the pinned Playground build in `runtime.lock.json`. To update them:
 
 1. Publish a reviewed official Playground archive under a new release tag on this repository. Never replace the bytes behind an existing pinned URL.
-2. Update `runtime.lock.json` together: URL, checksum, Playground version, WordPress major and provenance. For a PHP change, update `PHP_VERSION` (and `SUPPORTED_PHP`) in `src/shared.mjs`.
+2. Update `runtime.lock.json` together: URL, checksum, Playground version, WordPress major and provenance. For a PHP change, update `PHP_VERSION` (and `SUPPORTED_PHP`) in `src/shared.ts`.
 3. Run `pnpm run test:runtime` (CI runs it on Linux and Windows), release the package, and bump it in each site's `cms/package.json`; the CMS Workers Build redeploys the editor.
 
 Existing content needs no manual migration. A snapshot opens on the WordPress it was saved with or any newer one: after restoring, the editor runs core's database upgrade (`wp_upgrade()`, as `wp-admin/upgrade.php` would), shows a notice and marks the site unsynced, so the next sync saves the upgraded snapshot. The previous versions stay under **Saved versions** as the rollback. A snapshot from a newer WordPress than the editor's is refused, because WordPress cannot run on a newer database. The SQLite database does not depend on the PHP version, so snapshots from any supported PHP version restore unchanged.
@@ -157,10 +157,10 @@ Limits: a 128 MiB database, 50 MiB per file, a 1.5 MB manifest and rendered reco
 
 ```powershell
 pnpm test
-pnpm run check
+pnpm run typecheck
 pnpm run test:runtime    # prepares the runtime for test/site and boots the pinned WordPress twice
 # With `static-wordpress dev --root test/site` running and Playwright Chromium installed:
-node bin/static-wordpress.mjs test:browser --root test/site
+node bin/static-wordpress.ts test:browser --root test/site
 ```
 
 References: [Playground self-hosting](https://developer.wordpress.org/playground/developers/architecture/host-your-own-playground/), [D1 limits](https://developers.cloudflare.com/d1/platform/limits/), [Access JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/), [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/).

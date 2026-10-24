@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   test:
-    name: Tests
+    name: Lint, typecheck, build and test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +22,9 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run check
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm run build
       - run: pnpm test
 
   runtime:

@@ -1,0 +1,674 @@
+import { startPlaygroundWeb } from '@wp-playground/client'
+import type { PlaygroundClient, ProgressTrackerEvent } from '@wp-playground/client'
+import { ProgressTracker } from '@php-wasm/progress'
+import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate'
+import { CHUNK_SIZE, PHP_VERSION, sha256, validateManifest, safePath, rewriteRecords, canOpenSnapshot, errorMessage, isHttpError } from '../src/shared.ts'
+import type { ContentRecord, HttpError, Manifest, ManifestFile } from '../src/shared.ts'
+import type { SiteConfig } from '../src/config.ts'
+import { recovery } from './recovery.ts'
+import { headlessTheme, headlessThemeFiles, isRetiredThemeFile } from './headless-theme.ts'
+
+// A file in a checkpoint, with its bytes once they are on this device. Saved uploads left in R2 have none.
+export interface CheckpointFile extends ManifestFile {
+  bytes?: Uint8Array
+}
+
+// A complete WordPress state: the SQLite database, the wp-content files and, when captured here, the rendered feed.
+export interface Checkpoint {
+  manifest: Manifest
+  database: Uint8Array
+  files: CheckpointFile[]
+  records?: ContentRecord[]
+  baseRevision?: string | null
+  dirtyToken?: string
+}
+
+interface VirtualFile {
+  hash: string
+  size: number
+}
+
+// What the bridge's static_wordpress_capture() returns.
+interface CaptureExport {
+  wordpress: string
+  files: { path: string, size: number }[]
+  records: ContentRecord[]
+  uploadBase: string
+  siteUrl: string
+  // PHP encodes an empty map as an empty list.
+  virtual: Record<string, VirtualFile> | []
+  links?: Record<string, string>
+  dirtyToken: string
+}
+
+// The deployed runtime.json written by the build.
+interface RuntimeInfo {
+  playground: string
+  wordpress: string
+  php: string
+}
+
+/* eslint-disable @typescript-eslint/naming-convention -- D1 column names */
+interface SavedSnapshot {
+  id: string
+  manifest: Manifest
+  committed_at: number
+  build_status: string
+  build_error: string | null
+}
+/* eslint-enable @typescript-eslint/naming-convention */
+
+// A saved version, or the manifest of a local recovery checkpoint.
+type SnapshotSource = Pick<SavedSnapshot, 'manifest'> & Partial<SavedSnapshot>
+
+interface EditorStatus {
+  revision: string | null
+  snapshot: SavedSnapshot | null
+  config?: SiteConfig
+}
+
+type ApiOptions = RequestInit & { allowConflict?: boolean }
+type Progress = (stage: string, detail?: string, value?: number) => void
+
+// Bundled by the build from the site's cms.config.json. Identifiers derived from config.id keep the Playground
+// scope, locks and storage names of sites that predate the shared package.
+const config = __STATIC_WORDPRESS_CONFIG__
+const HEADLESS_THEME = headlessTheme(config)
+const categoryMap = Object.fromEntries(config.sections.map(section => [section.name, section.category]))
+const MEDIA_TYPES: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', mp4: 'video/mp4', webm: 'video/webm', ogg: 'audio/ogg', mp3: 'audio/mpeg', wav: 'audio/wav' }
+
+// Every id used here is in web/index.html.
+const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T
+// Set by boot() before anything else reads it.
+let client!: PlaygroundClient
+let lease: string | null = null, revision: string | null = null, busy = false, lostLease = false
+let dirtyToken = '', syncTimer: number | undefined, renewTimer: number | undefined, pollTimer: number | undefined, pending: Checkpoint | null | undefined
+let unsyncedChanges = false
+// The theme or the database changed while opening (a runtime upgrade), so the next sync must save it.
+let migrationPending = false
+let runtime: RuntimeInfo
+let autoSyncPaused = false
+let savedVersions: SavedSnapshot[] = []
+const leaseKey = `${config.id}-cms-lease`
+let releaseTab: (() => void) | undefined, loadingTimer: number | undefined, loadingStarted: number, lastProgress: number, loadingActive = false
+const api = async (path: string, options: ApiOptions = {}) => {
+  const headers = new Headers(options.headers)
+  if (lease) headers.set('X-CMS-Lease', lease)
+  const response = await fetch(path, { signal: AbortSignal.timeout(60000), ...options, headers, cache: 'no-store', redirect: 'error' })
+  if (!response.ok) {
+    const body: { error?: string } = await response.json().catch(() => ({}))
+    const error: HttpError = Object.assign(new Error(body.error || `Request failed (${response.status})`), { status: response.status })
+    if (response.status === 409 && !options.allowConflict) freeze(error.message)
+    throw error
+  }
+
+  return response
+}
+const send = async <T>(path: string, body: unknown, method = 'POST'): Promise<T> => (await api(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json()
+const setStatus = (message: string) => { $('status').textContent = message }
+const notice = (message: string) => { $('notice').textContent = message; $('notice').hidden = !message }
+
+function showProgress(stage: string, detail = '', value?: number) {
+  if (!loadingActive) return
+  const changed = $('loading-stage').textContent !== stage || $('loading-detail').textContent !== detail || $<HTMLProgressElement>('loading-progress').value !== value
+  if (changed) lastProgress = Date.now()
+  $('loading-stage').textContent = stage
+  $('loading-detail').textContent = detail
+  if (Number.isFinite(value)) $<HTMLProgressElement>('loading-progress').value = value!
+  else $('loading-progress').removeAttribute('value')
+}
+
+function startLoading() {
+  loadingActive = true
+  loadingStarted = lastProgress = Date.now()
+  $('loading').hidden = false
+  loadingTimer = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - loadingStarted) / 1000)
+    const idle = Math.floor((Date.now() - lastProgress) / 1000)
+    $('loading-time').textContent = `${elapsed}s elapsed · last progress ${idle}s ago`
+    if (idle >= 30) {
+      $('loading-help').textContent = 'No progress for 30 seconds. Check your connection; if this continues, reload to resume your editing session.'
+      $('reload').hidden = false
+    } else {
+      $('loading-help').textContent = 'The first visit downloads WordPress and PHP. Keep this tab open while your saved content is restored.'
+      $('reload').hidden = true
+    }
+  }, 1000)
+}
+
+async function startupStep<T>(promise: Promise<T>, message: string, timeout = 120000): Promise<T> {
+  let timer: number | undefined
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), timeout) })])
+  } finally { clearTimeout(timer) }
+}
+
+async function openingFailed(error: unknown) {
+  clearInterval(loadingTimer); clearInterval(renewTimer); clearInterval(pollTimer)
+  clearInterval(syncTimer)
+  loadingActive = false
+  $('wordpress').hidden = true
+  $<HTMLIFrameElement>('wordpress').src = 'about:blank'
+  for (const id of ['sync', 'backup', 'import', 'close']) $<HTMLButtonElement | HTMLInputElement>(id).disabled = true
+  // Do not leave a failed boot renewing a lease indefinitely.
+  if (lease && !lostLease) await api('/api/editor/lease', { method: 'DELETE', allowConflict: true }).catch(() => {})
+  lease = null
+  releaseTab?.()
+  $('loading').hidden = false
+  $('loading-stage').textContent = 'Editor could not open'
+  $('loading-progress').hidden = true
+  $('reload').hidden = false
+  setStatus('Editor could not open')
+  notice(errorMessage(error))
+}
+
+async function claimTab() {
+  if (!navigator.locks) throw new Error('This browser does not support editing-session protection. Use a current version of Chrome, Edge, Firefox or Safari.')
+  await new Promise<void>((resolve, reject) => {
+    navigator.locks.request(`${config.id}-cms-editor`, { ifAvailable: true }, lock => {
+      if (!lock) {
+        reject(new Error('The editor is already open in another tab. Close that tab and reload this one.'))
+
+        return
+      }
+
+      return new Promise<void>(release => { releaseTab = release; resolve() })
+    }).catch(reject)
+  })
+}
+
+function freeze(message: string) {
+  lostLease = true
+  clearInterval(syncTimer)
+  clearInterval(renewTimer)
+  $<HTMLButtonElement>('sync').disabled = true
+  document.body.classList.add('busy')
+  notice(`${message} Download a backup to keep any unsynced work.`)
+  setStatus('Editing paused')
+}
+
+async function php(code: string) {
+  const result = await client.run({ code: `<?php define('STATIC_WORDPRESS_CHECKPOINT', true); require '/wordpress/wp-load.php'; ${code}` })
+  if (result.exitCode !== 0 || result.httpStatusCode >= 400) throw new Error(result.errors || result.text || 'WordPress checkpoint failed')
+
+  return result.text
+}
+
+const phpString = (value: string) => `'${value.replaceAll('\\', '\\\\').replaceAll('\'', '\\\'')}'`
+
+function mediaType(path: string) {
+  const extension = path.split('.').pop()!.toLowerCase()
+
+  return MEDIA_TYPES[extension] || 'application/octet-stream'
+}
+
+async function capture() {
+  await client.writeFile('/tmp/static-wordpress-lock', '1')
+  try { return await captureLocked() }
+  finally { await client.unlink('/tmp/static-wordpress-lock') }
+}
+
+async function captureLocked(): Promise<Checkpoint & { records: ContentRecord[], dirtyToken: string }> {
+  const exported: CaptureExport = JSON.parse(await php(`echo wp_json_encode(static_wordpress_capture(json_decode(${phpString(JSON.stringify(config))}, true)), JSON_THROW_ON_ERROR);`))
+  const database = await client.readFileAsBuffer('/tmp/static-wordpress.sqlite')
+  const files: CheckpointFile[] = []
+  for (const item of exported.files.sort((a, b) => a.path.localeCompare(b.path))) {
+    if (!safePath(item.path)) throw new Error(`Unsupported WordPress file path: ${item.path}`)
+    const bytes = await client.readFileAsBuffer(`/wordpress/wp-content/${item.path}`)
+    const hash = await sha256(bytes)
+    const file: CheckpointFile = { path: item.path, hash, size: bytes.length, kind: item.path.startsWith('uploads/') ? 'media' : 'private', type: mediaType(item.path), bytes }
+    files.push(file)
+  }
+  // Saved uploads that were never opened locally stay in R2. They have no bytes here, but remain in the manifest.
+  const virtual = Array.isArray(exported.virtual) ? {} : exported.virtual
+  for (const [path, item] of Object.entries(virtual)) {
+    if (!safePath(path) || files.some(file => file.path === path)) continue
+    files.push({ path, hash: item.hash, size: item.size, kind: 'media', type: mediaType(path) })
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path))
+  const records = rewriteRecords(exported, files, location.origin, config)
+  const chunks = []
+  for (let position = 0; position < database.length; position += CHUNK_SIZE) chunks.push(await sha256(database.subarray(position, position + CHUNK_SIZE)))
+  const manifest = validateManifest({ version: 1, runtime: runtime.playground, php: PHP_VERSION, wordpress: exported.wordpress, databaseSize: database.length, databaseHash: await sha256(database), chunks, files: files.map(file => ({ path: file.path, hash: file.hash, size: file.size, kind: file.kind, type: file.type })), sections: categoryMap, counts: Object.fromEntries(config.sections.map(({ name }) => [name, records.filter(post => post.section === name).length])) }, config)
+
+  return { manifest, database, files, records, baseRevision: revision, dirtyToken: exported.dirtyToken }
+}
+
+async function checkpoint() {
+  if (busy || lostLease || !client) return
+  busy = true
+  $<HTMLButtonElement>('sync').disabled = true
+  document.body.classList.add('busy')
+  setStatus('Saving a recovery copy…')
+  try {
+    const captured = pending = await capture()
+    await recovery('put', captured)
+    const result = await send<{ revision: string, missingFiles: number[] }>('/api/editor/snapshots', { baseRevision: revision, manifest: captured.manifest })
+    const base = `/api/editor/snapshots/${result.revision}`
+    for (let position = 0; position < captured.manifest.chunks.length; position++) {
+      setStatus(`Syncing database ${position + 1}/${captured.manifest.chunks.length}…`)
+      await api(`${base}/chunks/${position}`, { method: 'PUT', body: captured.database.slice(position * CHUNK_SIZE, (position + 1) * CHUNK_SIZE) })
+    }
+    const missingFiles = result.missingFiles
+    let nextFile = 0, completedFiles = 0
+    const uploadFiles = async () => {
+      while (nextFile < missingFiles.length) {
+        const index = missingFiles[nextFile++]
+        const file = captured.files[index]
+        await api(`${base}/files/${index}`, { method: 'PUT', headers: { 'Content-Type': String(file.type) }, body: file.bytes as Uint8Array<ArrayBuffer> })
+        setStatus(`Syncing changed files ${++completedFiles}/${missingFiles.length}…`)
+      }
+    }
+    const uploads = await Promise.allSettled(Array.from({ length: Math.min(4, missingFiles.length) }, uploadFiles))
+    const failure = uploads.find(result => result.status === 'rejected')
+    if (failure) throw failure.reason
+    for (const post of captured.records) await send(`${base}/content/${post.section}`, post, 'PUT')
+    setStatus('Committing cloud version…')
+    const committed = await send<{ revision: string, committedAt: number }>(`${base}/commit`, {})
+    revision = committed.revision
+    dirtyToken = captured.dirtyToken
+    unsyncedChanges = false
+    migrationPending = false
+    await recovery('delete')
+    pending = null
+    notice('')
+    setStatus('Synced to Cloudflare')
+    $('last-synced').textContent = `Last synced ${new Date(committed.committedAt * 1000).toLocaleString('en-GB')}`
+    await refreshBuild()
+  } catch (error) {
+    if (isHttpError(error) && error.status === 409) freeze(error.message)
+    else { notice(`${errorMessage(error)}. Your last recovery copy remains on this device. Use Sync now to retry.`); setStatus('Not synced') }
+  } finally {
+    busy = false
+    $<HTMLButtonElement>('sync').disabled = lostLease
+    if (!lostLease) document.body.classList.remove('busy')
+  }
+}
+
+async function prepareHeadlessTheme(manifest?: Manifest) {
+  const directory = `/wordpress/wp-content/themes/${HEADLESS_THEME}`
+  await client.mkdir(directory).catch(() => {})
+  let changedFiles = false
+  for (const [name, contents] of Object.entries(headlessThemeFiles(config))) {
+    const bytes = strToU8(contents)
+    const saved = manifest?.files.find(file => file.path === `themes/${HEADLESS_THEME}/${name}`)
+    if (manifest && saved?.hash !== await sha256(bytes)) changedFiles = true
+    await client.writeFile(`${directory}/${name}`, bytes)
+  }
+  const switched = await php(`wp_clean_themes_cache();
+    if (get_stylesheet() !== ${phpString(HEADLESS_THEME)} || get_template() !== ${phpString(HEADLESS_THEME)}) {
+      switch_theme(${phpString(HEADLESS_THEME)}); echo 'switched';
+    }`)
+  // WordPress's core bundle includes this default theme on every boot. Its files
+  // are disposable here; historical snapshots and backups remain unchanged.
+  const retired = '/wordpress/wp-content/themes/twentytwentyfive'
+  if (await client.isDir(retired)) await client.rmdir(retired, { recursive: true })
+  if (switched.trim() === 'switched' || changedFiles || manifest?.files.some(file => isRetiredThemeFile(file.path))) {
+    markMigrated()
+  }
+}
+
+function markMigrated() {
+  migrationPending = true
+  unsyncedChanges = true
+
+  return client.writeFile('/tmp/static-wordpress-dirty', crypto.randomUUID())
+}
+
+// A snapshot saved with an older WordPress gets core's database upgrade, exactly as wp-admin/upgrade.php would run it.
+async function upgradeDatabase() {
+  if ((await php('echo static_wordpress_upgrade_database() ? "upgraded" : "current";')).trim() !== 'upgraded') return
+  await markMigrated()
+  notice('WordPress updated this site\'s database for the new version. Sync to save it; earlier versions stay under Saved versions.')
+}
+
+async function restore(checkpoint: Checkpoint) {
+  showProgress('Restoring WordPress files', 'Verifying the saved database…')
+  validateManifest(checkpoint.manifest, config)
+  if (checkpoint.database.length !== checkpoint.manifest.databaseSize) throw new Error('Database backup size mismatch')
+  if (await sha256(checkpoint.database) !== checkpoint.manifest.databaseHash) throw new Error('Database backup checksum mismatch')
+  const target = (await php('echo static_wordpress_database_path();')).trim()
+  // The snapshot is authoritative for user-owned files. Runtime-owned MU plugins remain pinned.
+  const files = checkpoint.files.filter(file => !isRetiredThemeFile(file.path))
+  const keep = files.map(file => file.path)
+  await php(`$keep = array_flip(json_decode(${phpString(JSON.stringify(keep))}, true)); foreach (array('uploads', 'plugins', 'themes', 'languages') as $dir) { $root = WP_CONTENT_DIR . '/' . $dir; if (!is_dir($root)) continue; $it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST); foreach ($it as $file) { if ($file->isFile() && !isset($keep[substr($file->getPathname(), strlen(WP_CONTENT_DIR) + 1)])) unlink($file->getPathname()); } }`)
+  // Files without bytes are saved uploads served from R2 on demand.
+  const stored = files.filter(file => !file.bytes)
+  const directories = [...new Set(files.filter(file => file.bytes).map(file => {
+    if (!safePath(file.path)) throw new Error(`Invalid backup file: ${file.path}`)
+
+    return `/wordpress/wp-content/${file.path.slice(0, file.path.lastIndexOf('/'))}`
+  }))]
+  const created = await client.run({ code: `<?php foreach (json_decode(${phpString(JSON.stringify(directories))}, true) as $dir) { if (!is_dir($dir) && !mkdir($dir, 0777, true)) throw new RuntimeException('Could not create backup directory'); }` })
+  if (created.exitCode !== 0) throw new Error('Could not prepare WordPress file directories')
+  const local = files.filter((file): file is CheckpointFile & { bytes: Uint8Array } => Boolean(file.bytes))
+  let restored = 0
+  for (const file of local) {
+    if (!safePath(file.path) || file.bytes.length !== file.size || await sha256(file.bytes) !== file.hash) throw new Error(`Invalid backup file: ${file.path}`)
+    const path = `/wordpress/wp-content/${file.path}`
+    await client.writeFile(path, file.bytes)
+    showProgress('Restoring WordPress files', `${++restored}/${local.length} files · ${file.path}`, restored / local.length * 100)
+  }
+  for (const file of stored) if (!safePath(file.path) || file.kind !== 'media') throw new Error(`Invalid stored file: ${file.path}`)
+  await publishVirtual(Object.fromEntries(stored.map(file => [file.path, { hash: file.hash, size: file.size }])))
+  showProgress('Restoring the database', 'Applying the verified SQLite snapshot…')
+  // Each PHP run closes its PDO connection. Replace the DB only between requests.
+  await client.writeFile(target, checkpoint.database)
+  for (const suffix of ['-wal', '-shm']) if (await client.fileExists(target + suffix)) await client.unlink(target + suffix)
+  showProgress('Restoring the database', 'Checking the database is up to date…')
+  await upgradeDatabase()
+  await prepareHeadlessTheme(checkpoint.manifest)
+  await php('wp_cache_flush(); wp_set_current_user(get_users(array(\'role\' => \'administrator\', \'number\' => 1))[0]->ID);')
+}
+
+async function fetchStored(item: VirtualFile & { path: string }) {
+  const bytes = new Uint8Array(await (await api(`/api/editor/files/${item.hash}`)).arrayBuffer())
+  if (bytes.length !== item.size || await sha256(bytes) !== item.hash) throw new Error(`Cloud file checksum or size mismatch: ${item.path}`)
+
+  return bytes
+}
+
+// The bridge serves these from R2 and reports which attachment files an image edit needs.
+async function publishVirtual(files: Record<string, VirtualFile>) {
+  await client.writeFile('/tmp/static-wordpress-virtual.json', JSON.stringify({ origin: location.origin, files }))
+}
+
+async function materializeWanted() {
+  const wanted: string[] = JSON.parse(await client.readFileAsText('/tmp/static-wordpress-wanted'))
+  await client.unlink('/tmp/static-wordpress-wanted')
+  const virtual: { files: Record<string, VirtualFile> } = JSON.parse(await client.readFileAsText('/tmp/static-wordpress-virtual.json'))
+  const paths = wanted.filter(path => safePath(path) && virtual.files[path])
+  if (!paths.length) return
+  setStatus('Downloading the original image…')
+  for (const path of paths) {
+    const bytes = await fetchStored({ path, ...virtual.files[path] })
+    await client.mkdir(`/wordpress/wp-content/${path.slice(0, path.lastIndexOf('/'))}`).catch(() => {})
+    await client.writeFile(`/wordpress/wp-content/${path}`, bytes)
+  }
+  // Re-read the map: another request may have deleted an attachment meanwhile.
+  const current: { files: Record<string, VirtualFile> } = JSON.parse(await client.readFileAsText('/tmp/static-wordpress-virtual.json'))
+  await publishVirtual(Object.fromEntries(Object.entries(current.files).filter(([path]) => !paths.includes(path))))
+  setStatus('Original image ready · open the editor again')
+}
+
+async function hydrate(files: CheckpointFile[]) {
+  for (const file of files) if (!file.bytes) file.bytes = await fetchStored(file)
+}
+
+async function cloudCheckpoint(snapshot: SnapshotSource, progress: Progress = () => {}, { editing = false } = {}): Promise<Checkpoint> {
+  const manifest = validateManifest(snapshot.manifest, config)
+  const database = new Uint8Array(manifest.databaseSize)
+  for (let index = 0; index < manifest.chunks.length; index++) {
+    progress('Downloading the database', `Chunk ${index + 1}/${manifest.chunks.length}`, index / manifest.chunks.length * 100)
+    const chunk = new Uint8Array(await (await api(`/api/editor/snapshots/${snapshot.id}/chunks/${index}`)).arrayBuffer())
+    if (await sha256(chunk) !== manifest.chunks[index]) throw new Error('Cloud database chunk checksum mismatch')
+    database.set(chunk, index * CHUNK_SIZE)
+  }
+  // Backups fetch the complete historical revision. Editing upgrades only the
+  // retired default theme, avoiding its 235 individual R2 downloads.
+  const entries = editing ? manifest.files.filter(file => !isRetiredThemeFile(file.path)) : manifest.files
+  const files: CheckpointFile[] = entries.map(item => ({ ...item }))
+  // Editing leaves uploads in R2. WordPress reaches them through /media and fetches originals only for image edits.
+  const wanted = files.map((item, index) => editing && item.kind === 'media' ? -1 : index).filter(index => index >= 0)
+  let next = 0, completed = 0, failed = false
+  progress('Downloading saved files', `0/${wanted.length} files`, 0)
+  const downloadFiles = async () => {
+    try {
+      while (!failed && next < wanted.length) {
+        const item = files[wanted[next++]]
+        item.bytes = await fetchStored(item)
+        progress('Downloading saved files', `${++completed}/${wanted.length} files · ${item.path}`, completed / wanted.length * 100)
+      }
+    } catch (error) { failed = true; throw error }
+  }
+  const downloads = await Promise.allSettled(Array.from({ length: Math.min(6, wanted.length) }, downloadFiles))
+  const failure = downloads.find(result => result.status === 'rejected')
+  if (failure) throw failure.reason
+
+  return { manifest, database, files, baseRevision: snapshot.id }
+}
+
+async function download(checkpoint: Checkpoint) {
+  const files = checkpoint.files.map(file => ({ ...file }))
+  await hydrate(files)
+  const entries: Record<string, Uint8Array> = { 'manifest.json': strToU8(JSON.stringify(checkpoint.manifest, null, 2)), 'database.sqlite': checkpoint.database }
+  for (const file of files) entries[`wp-content/${file.path}`] = file.bytes!
+  const blob = new Blob([zipSync(entries, { level: 1 }) as Uint8Array<ArrayBuffer>], { type: 'application/zip' })
+  const link = document.createElement('a')
+  link.href = URL.createObjectURL(blob)
+  link.download = `${config.id}-wordpress-${new Date().toISOString().replaceAll(':', '-')}.zip`
+  link.click()
+  setTimeout(() => URL.revokeObjectURL(link.href), 10000)
+}
+
+async function refreshBuild() {
+  const status: EditorStatus = await (await api('/api/editor/status')).json()
+  savedVersions = await (await api('/api/editor/snapshots')).json()
+  $('versions').replaceChildren(...savedVersions.map(snapshot => {
+    const option = document.createElement('option')
+    option.value = snapshot.id
+    option.textContent = new Date(snapshot.committed_at * 1000).toLocaleString('en-GB')
+
+    return option
+  }))
+  $('cloud-backups').hidden = !savedVersions.length
+  $('download-version').hidden = !savedVersions.length
+  $('retry').hidden = status.snapshot?.build_status !== 'failed'
+  if (status.snapshot?.build_error) notice(`Content is synced. Website rebuild: ${status.snapshot.build_error}`)
+}
+
+async function prepareBrowserRuntime() {
+  showProgress('Checking browser support', 'Registering the WordPress service worker…')
+  if (!navigator.serviceWorker) throw new Error('WordPress requires service-worker support and a secure browser connection.')
+  try {
+    await startupStep((async () => {
+      const registration = await navigator.serviceWorker.register('/sw.js', { scope: '/', type: 'classic', updateViaCache: 'none' })
+      // register() can return an existing registration even when its update fails.
+      // Await update explicitly so an authentication redirect is always visible.
+      await registration.update()
+      const worker = registration.installing || registration.waiting || registration.active
+      if (worker && worker.state !== 'activated') {
+        await new Promise<void>((resolve, reject) => {
+          worker.addEventListener('statechange', () => {
+            if (worker.state === 'activated') resolve()
+            if (worker.state === 'redundant') reject(new Error('The WordPress service worker could not activate'))
+          })
+        })
+      }
+    })(), 'The WordPress service-worker request timed out. Reload to retry.', 30000)
+  } catch (error) {
+    throw new Error(`WordPress could not start its service worker: ${errorMessage(error)}. If the request was redirected, reopen the CMS login and try again.`, { cause: error })
+  }
+}
+
+async function boot(snapshot?: SnapshotSource | null, local?: Checkpoint) {
+  if (!loadingActive) startLoading()
+  setStatus('Loading WordPress…')
+  if (snapshot?.committed_at) $('last-synced').textContent = `Last synced ${new Date(snapshot.committed_at * 1000).toLocaleString('en-GB')}`
+  runtime = await (await api('/runtime.json')).json()
+  if (snapshot && !canOpenSnapshot(snapshot.manifest.wordpress, runtime.wordpress)) throw new Error(`This site was saved with WordPress ${snapshot.manifest.wordpress}, newer than this editor's ${runtime.wordpress}. Deploy the CMS with the newer runtime before editing.`)
+  const progressTracker = new ProgressTracker()
+  progressTracker.addEventListener('progress', (event: ProgressTrackerEvent) => showProgress('Starting WordPress', event.detail.caption || 'Downloading PHP and preparing WordPress…', event.detail.progress))
+  showProgress('Starting WordPress', 'Downloading PHP and preparing WordPress…')
+  client = await startupStep(startPlaygroundWeb({
+    iframe: $<HTMLIFrameElement>('wordpress'), remoteUrl: `${location.origin}/remote.html`, scope: `${config.id}-cms`,
+    progressTracker, detailedProgressCaptions: true,
+    blueprint: { landingPage: '/', preferredVersions: { php: PHP_VERSION, wp: runtime.wordpress.split('.').slice(0, 2).join('.') }, login: false, features: { networking: false }, constants: { DISABLE_WP_CRON: true, WP_AUTO_UPDATE_CORE: false } }
+  }), 'WordPress startup did not finish within two minutes. Reload to retry; your committed cloud snapshot is safe.')
+  showProgress('Preparing saved content', 'Installing the CMS bridge…')
+  await client.mkdir('/wordpress/wp-content/mu-plugins').catch(() => {})
+  // The bridge reads the site's sections and fields on every request (metaboxes, capture); /tmp is never backed up.
+  await client.writeFile('/tmp/static-wordpress-config.json', JSON.stringify(config))
+  await client.writeFile('/wordpress/wp-content/mu-plugins/static-wordpress.php', await (await api('/static-wordpress.php')).text())
+  if (snapshot) await restore(local || await cloudCheckpoint(snapshot, showProgress, { editing: true }))
+  else {
+    await php(`foreach (json_decode(${phpString(JSON.stringify(config.sections.map(({ category, label }) => ({ category, label }))))}, true) as $section) { if (!get_term_by('slug', $section['category'], 'category')) wp_insert_term($section['label'], 'category', array('slug' => $section['category'])); }`)
+    await prepareHeadlessTheme()
+  }
+  // Existing installs may have a different administrator username; authenticate locally.
+  showProgress('Opening WordPress admin', 'Signing in to your restored site…')
+  await php('$users = get_users(array(\'role\' => \'administrator\', \'number\' => 1)); if (!$users) throw new RuntimeException(\'No WordPress administrator in backup\'); wp_set_auth_cookie($users[0]->ID, true);')
+  const loginToken = crypto.randomUUID()
+  await client.writeFile('/tmp/static-wordpress-login', loginToken)
+  const loggedIn = await client.request({ url: `/?static_wordpress_login=${loginToken}` })
+  if (loggedIn.httpStatusCode !== 200) throw new Error('Could not authenticate to restored WordPress')
+  await client.goTo('/wp-admin/edit.php')
+  if (lostLease) throw new Error('The editing lease was lost during startup. Reload to retry.')
+  loadingActive = false
+  clearInterval(loadingTimer)
+  $('loading').hidden = true
+  $('wordpress').hidden = false
+  $<HTMLButtonElement>('backup').disabled = false
+  $<HTMLButtonElement>('close').disabled = false
+  $<HTMLInputElement>('import').disabled = false
+  $<HTMLButtonElement>('sync').disabled = false
+  setStatus(local ? 'Local changes restored — sync to save to Cloudflare' : 'Ready')
+  dirtyToken = (await client.fileExists('/tmp/static-wordpress-dirty')) ? await client.readFileAsText('/tmp/static-wordpress-dirty') : ''
+  if (local || migrationPending) dirtyToken = ''
+  unsyncedChanges = Boolean(local) || migrationPending
+  const detectChanges = async () => {
+    const token = await client.fileExists('/tmp/static-wordpress-dirty') ? await client.readFileAsText('/tmp/static-wordpress-dirty') : ''
+    unsyncedChanges = token !== dirtyToken || Boolean(pending)
+
+    return unsyncedChanges
+  }
+  pollTimer = setInterval(async () => {
+    if (busy || lostLease) return
+    try { if (await client.fileExists('/tmp/static-wordpress-wanted')) await materializeWanted() }
+    catch (error) { notice(`Could not download the original image: ${errorMessage(error)}`) }
+    if (autoSyncPaused) return
+    try {
+      if (await detectChanges() && !pending) setStatus('Changes pending · automatic sync every 2 minutes')
+    } catch (error) { notice(errorMessage(error)) }
+  }, 3000)
+  syncTimer = setInterval(async () => {
+    if (busy || lostLease || autoSyncPaused) return
+    try { if (await detectChanges()) await checkpoint() }
+    catch (error) { notice(errorMessage(error)) }
+  }, 120000)
+  await refreshBuild()
+}
+
+async function openEditor() {
+  await claimTab()
+  // If runtime validation fails during refresh, release this tab's previous
+  // lease too. The tab lock prevents a duplicate tab from releasing it.
+  lease = sessionStorage.getItem(leaseKey)
+  startLoading()
+  // Activate the current cache policy before any status/lease request. Older
+  // Playground versions may have cached the CMS shell and API responses.
+  await prepareBrowserRuntime()
+  let status: EditorStatus = await (await api('/api/editor/status')).json()
+  if (status.config?.id !== config.id || JSON.stringify(status.config.sections) !== JSON.stringify(config.sections)) throw new Error('This editor was built from a different cms.config.json than the CMS Worker. Redeploy the CMS.')
+  // sessionStorage belongs to this tab and survives refresh. A Web Lock prevents
+  // duplicated tabs (which can inherit sessionStorage) from resuming concurrently.
+  const previousLease = lease
+  const acquired: { token: string, revision: string | null } = await (await api('/api/editor/lease', { method: 'POST', headers: previousLease ? { 'X-CMS-Lease': previousLease } : {}, body: '{}', allowConflict: true })).json()
+  lease = acquired.token
+  sessionStorage.setItem(leaseKey, lease)
+  revision = acquired.revision
+  status = await (await api('/api/editor/status')).json()
+  if (status.revision !== revision) throw new Error('Cloud revision changed while opening the editor. Reload to retry.')
+  renewTimer = setInterval(async () => {
+    try { await api('/api/editor/lease', { method: 'PATCH' }) }
+    catch (error) { freeze(`Cannot renew editing session: ${errorMessage(error)}`) }
+  }, 30000)
+  const local = await recovery('get')
+  if (local) {
+    loadingActive = false
+    clearInterval(loadingTimer)
+    $('loading').hidden = true
+    pending = local
+    $('recovery').hidden = false
+    $<HTMLButtonElement>('recover').disabled = local.baseRevision !== revision
+    setStatus('Local recovery available')
+    $('recover').onclick = async () => { $('recovery').hidden = true; await boot({ manifest: local.manifest }, local).catch(openingFailed) }
+    $('download-recovery').onclick = () => download(local).catch(error => notice(`Could not download backup: ${errorMessage(error)}`))
+    $('discard-recovery').onclick = async () => { await recovery('delete'); pending = null; $('recovery').hidden = true; await boot(status.snapshot).catch(openingFailed) }
+  } else await boot(status.snapshot)
+}
+
+$('sync').onclick = () => {
+  autoSyncPaused = false
+
+  return checkpoint()
+}
+$('backup').onclick = async () => { try { await download(busy ? pending! : await capture()) } catch (error) { notice(errorMessage(error)) } }
+$('download-version').onclick = async () => {
+  $<HTMLButtonElement>('download-version').disabled = true
+  try {
+    const snapshot = savedVersions.find(snapshot => snapshot.id === $<HTMLSelectElement>('versions').value)
+    if (snapshot) await download(await cloudCheckpoint(snapshot))
+  } catch (error) { notice(`Could not download saved version: ${errorMessage(error)}`) }
+  finally { $<HTMLButtonElement>('download-version').disabled = false }
+}
+$('retry').onclick = async () => { await send(`/api/editor/snapshots/${revision}/retry-build`, {}); setStatus('Website rebuild requested') }
+$('import').onchange = async event => {
+  const input = event.target as HTMLInputElement
+  if (busy || lostLease || !input.files?.[0]) return
+  autoSyncPaused = true
+  busy = true
+  document.body.classList.add('busy')
+  try {
+    // Keep the current site recoverable before an explicitly selected import.
+    pending = await capture()
+    await recovery('put', pending)
+    const entries = unzipSync(new Uint8Array(await input.files[0].arrayBuffer()))
+    if (entries['manifest.json'] && entries['database.sqlite']) {
+      const manifest = validateManifest(JSON.parse(strFromU8(entries['manifest.json'])), config)
+      const current: { wordpress: string } = JSON.parse(await php('echo wp_json_encode(array("wordpress" => $GLOBALS["wp_version"]));'))
+      if (!canOpenSnapshot(manifest.wordpress, current.wordpress)) throw new Error(`This backup was saved with WordPress ${manifest.wordpress}, newer than this editor's ${current.wordpress}`)
+      const files = manifest.files.map(file => {
+        const bytes = entries[`wp-content/${file.path}`]
+        if (!bytes) throw new Error(`Backup is missing ${file.path}`)
+
+        return { ...file, bytes }
+      })
+      await restore({ manifest, database: entries['database.sqlite'], files })
+    } else if (entries['migration.json']) {
+      await client.writeFile('/tmp/static-wordpress-migration.json', entries['migration.json'])
+      for (const [path, bytes] of Object.entries(entries)) {
+        if (!path.startsWith('wp-content/')) continue
+        const relative = path.slice('wp-content/'.length)
+        if (!safePath(relative)) throw new Error(`Unsafe migration path: ${relative}`)
+        const target = `/wordpress/wp-content/${relative}`
+        await client.run({ code: `<?php if (!is_dir(dirname(${phpString(target)}))) mkdir(dirname(${phpString(target)}), 0777, true);` })
+        await client.writeFile(target, bytes)
+      }
+      const migrationPhp = await (await api('/migration.php')).text()
+      await client.writeFile('/tmp/static-wordpress-import.php', migrationPhp)
+      const report: { posts: number, media: number } = JSON.parse(await php('require \'/tmp/static-wordpress-import.php\'; echo wp_json_encode(static_wordpress_import(\'/tmp/static-wordpress-migration.json\'), JSON_THROW_ON_ERROR);'))
+      notice(`Imported ${report.posts} posts and ${report.media} media records. Verify every section before publishing the first cloud version.`)
+    } else throw new Error('Select a CMS backup ZIP or a migration ZIP produced by the export tool')
+    await client.writeFile('/tmp/static-wordpress-dirty', crypto.randomUUID())
+    await client.goTo('/wp-admin/edit.php')
+    setStatus('Import complete — Sync now when ready')
+    pending = await capture()
+    await recovery('put', pending)
+  } catch (error) { notice(`Import failed: ${errorMessage(error)}. The pre-import recovery backup remains on this device.`) }
+  finally { busy = false; document.body.classList.remove('busy'); input.value = '' }
+}
+$('close').onclick = async () => {
+  if (busy) return
+  await checkpoint()
+  if (pending || lostLease) return
+  clearInterval(pollTimer); clearInterval(renewTimer); clearInterval(syncTimer)
+  await api('/api/editor/lease', { method: 'DELETE' })
+  sessionStorage.removeItem(leaseKey)
+  lease = null
+  releaseTab?.()
+  $('wordpress').hidden = true
+  $<HTMLButtonElement>('close').disabled = true; $<HTMLButtonElement>('sync').disabled = true; $<HTMLButtonElement>('backup').disabled = true
+  setStatus('Editor closed. Reload to open again.')
+}
+window.addEventListener('beforeunload', event => {
+  if (busy || pending || unsyncedChanges) { event.preventDefault(); event.returnValue = '' }
+})
+
+$('reload').onclick = () => location.reload()
+window.addEventListener('pagehide', () => {
+  clearInterval(renewTimer); clearInterval(pollTimer); clearInterval(syncTimer)
+  releaseTab?.()
+})
+window.addEventListener('pageshow', event => { if (event.persisted) location.reload() })
+openEditor().catch(openingFailed)

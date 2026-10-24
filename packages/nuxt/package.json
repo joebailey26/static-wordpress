@@ -2,18 +2,53 @@
   "name": "@joebailey26/nuxt-static-wordpress",
   "version": "0.1.0",
   "description": "Nuxt module that loads a static-wordpress CMS feed at build time, with Cloudflare Image Transformations",
-  "repository": { "type": "git", "url": "https://github.com/joebailey26/static-wordpress.git", "directory": "packages/nuxt" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joebailey26/static-wordpress.git",
+    "directory": "packages/nuxt"
+  },
   "type": "module",
   "exports": {
-    ".": "./src/module.js",
-    "./images": "./src/images.js",
-    "./feed": "./src/feed.js",
+    ".": {
+      "types": "./dist/types.d.mts",
+      "import": "./dist/module.mjs",
+      "default": "./dist/module.mjs"
+    },
+    "./images": {
+      "types": "./dist/images.d.mts",
+      "import": "./dist/images.mjs",
+      "default": "./dist/images.mjs"
+    },
+    "./feed": {
+      "types": "./dist/feed.d.mts",
+      "import": "./dist/feed.mjs",
+      "default": "./dist/feed.mjs"
+    },
     "./package.json": "./package.json"
   },
-  "files": ["src", "README.md"],
+  "main": "./dist/module.mjs",
+  "typesVersions": {
+    "*": {
+      ".": [
+        "./dist/types.d.mts"
+      ],
+      "images": [
+        "./dist/images.d.mts"
+      ],
+      "feed": [
+        "./dist/feed.d.mts"
+      ]
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
-    "test": "node --test test/*.test.mjs",
-    "check": "node --check src/module.js"
+    "build": "nuxt-module-build build",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "node --test test/*.test.ts",
+    "prepack": "pnpm run build"
   },
   "dependencies": {
     "@nuxt/kit": "^4.6.2",
@@ -26,8 +61,24 @@
     "nuxt": "^4.6.2"
   },
   "peerDependenciesMeta": {
-    "@torchlight-api/client": { "optional": true }
+    "@torchlight-api/client": {
+      "optional": true
+    }
   },
-  "publishConfig": { "registry": "https://npm.pkg.github.com" },
-  "engines": { "node": "^24.18.0" }
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "engines": {
+    "node": "^24.18.0"
+  },
+  "devDependencies": {
+    "@nuxt/module-builder": "^1.0.2",
+    "@nuxt/schema": "^4.6.2",
+    "nuxt": "^4.6.2",
+    "h3": "^1.15.4",
+    "@types/he": "^1.2.3",
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3",
+    "vue-tsc": "^3.3.13"
+  }
 }
