@@ -1,0 +1,79 @@
+{
+  "name": "@joebailey26/static-wordpress",
+  "version": "0.1.0",
+  "description": "WordPress Playground editor on a Cloudflare Worker (D1 snapshots, R2 media) with a build-token content feed",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joebailey26/static-wordpress.git",
+    "directory": "packages/cms"
+  },
+  "type": "module",
+  "bin": {
+    "static-wordpress": "dist/bin/static-wordpress.js"
+  },
+  "exports": {
+    "./worker": {
+      "types": "./dist/src/worker.d.ts",
+      "default": "./dist/src/worker.js"
+    },
+    "./config": {
+      "types": "./dist/src/config.d.ts",
+      "default": "./dist/src/config.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "web",
+    "scripts/service-worker-policy.ts",
+    "wordpress",
+    "migrations",
+    "runtime.lock.json",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.web.json",
+    "test": "node --test --test-isolation=none test/*.test.ts",
+    "test:runtime": "node bin/static-wordpress.ts build:ci --root test/site && node bin/static-wordpress.ts test:wordpress --root test/site",
+    "prepack": "pnpm run build"
+  },
+  "dependencies": {
+    "@php-wasm/progress": "3.1.60",
+    "@wp-playground/blueprints": "3.1.60",
+    "@wp-playground/client": "3.1.60",
+    "cheerio": "1.1.2",
+    "esbuild": "0.25.12",
+    "fflate": "0.8.2",
+    "jose": "6.1.3",
+    "yauzl": "3.2.0"
+  },
+  "peerDependencies": {
+    "wrangler": "^4.151.3",
+    "@cloudflare/workers-types": "^5.20261024.1"
+  },
+  "devDependencies": {
+    "@php-wasm/node": "3.1.60",
+    "@wp-playground/cli": "3.1.60",
+    "playwright": "1.64.1",
+    "wrangler": "4.151.3",
+    "sharp": "0.34.5",
+    "@types/yauzl": "^2.10.3",
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3",
+    "@cloudflare/workers-types": "^5.20261024.1",
+    "@wp-playground/wordpress": "3.1.60"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "engines": {
+    "node": "^24.18.0"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/workers-types": {
+      "optional": true
+    }
+  }
+}

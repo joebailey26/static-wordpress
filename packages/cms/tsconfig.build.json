@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": ".",
+    "outDir": "dist"
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "bin/**/*.ts"],
+  "exclude": ["scripts/service-worker-policy.ts"]
+}

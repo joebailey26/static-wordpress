@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Everything here is bundled: src/module, images and feed by nuxt-module-build, src/runtime by the site's Nuxt build.
+    // The runtime imports extensionless, as in a Nuxt app; files Node loads directly (the tests) use .ts extensions.
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "paths": {
+      "#app": ["./types/nuxt-app.d.ts"],
+      "#imports": ["./types/nuxt-app.d.ts"],
+      "#cms-content": ["./types/cms-content.d.ts"]
+    }
+  },
+  "include": ["src", "test", "types", "build.config.ts"]
+}

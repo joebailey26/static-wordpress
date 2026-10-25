@@ -1,0 +1,6 @@
+packages:
+  - packages/*
+onlyBuiltDependencies:
+  - esbuild
+  - fs-ext-extra-prebuilt
+  - workerd
