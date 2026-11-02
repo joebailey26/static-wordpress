@@ -1,0 +1,51 @@
+{
+  "name": "@joebailey26/turnstile-forms",
+  "version": "0.0.0",
+  "description": "Website forms checked by Cloudflare Turnstile and emailed by a Worker, with the Vue composables for the form and widget",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joebailey26/static-wordpress.git",
+    "directory": "packages/forms"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/worker.d.ts",
+      "default": "./dist/worker.js"
+    },
+    "./vue": {
+      "types": "./dist/vue.d.ts",
+      "default": "./dist/vue.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test --test-isolation=none test/*.test.ts",
+    "prepack": "pnpm run build"
+  },
+  "peerDependencies": {
+    "vue": "^3.5.0"
+  },
+  "peerDependenciesMeta": {
+    "vue": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^6.0.3",
+    "vue": "^3.5.44"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "engines": {
+    "node": "^24.18.0"
+  }
+}
