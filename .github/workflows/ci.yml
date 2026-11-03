@@ -9,6 +9,7 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   check:
@@ -29,7 +30,11 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+          # eslint-config-galexia is installed from GitHub Packages.
+          registry-url: https://npm.pkg.github.com
       - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: pnpm run ${{ matrix.script }}
 
   runtime:
@@ -49,5 +54,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+          # eslint-config-galexia is installed from GitHub Packages.
+          registry-url: https://npm.pkg.github.com
       - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: pnpm run test:runtime
