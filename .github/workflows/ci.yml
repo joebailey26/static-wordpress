@@ -9,11 +9,20 @@ concurrency:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
-  test:
-    name: Lint, typecheck, build and test
+  check:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Lint, script: lint }
+          - { name: Typecheck, script: typecheck }
+          - { name: Build, script: build }
+          - { name: Test, script: test }
     steps:
       - uses: actions/checkout@v4
       - run: corepack enable
@@ -21,11 +30,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+          # eslint-config-galexia is installed from GitHub Packages.
+          registry-url: https://npm.pkg.github.com
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run lint
-      - run: pnpm run typecheck
-      - run: pnpm run build
-      - run: pnpm test
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: pnpm run ${{ matrix.script }}
 
   runtime:
     name: CMS runtime (${{ matrix.os }})
@@ -44,5 +54,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+          # eslint-config-galexia is installed from GitHub Packages.
+          registry-url: https://npm.pkg.github.com
       - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: pnpm run test:runtime
