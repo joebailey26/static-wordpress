@@ -11,9 +11,17 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    name: Lint, typecheck, build and test
+  check:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Lint, script: lint }
+          - { name: Typecheck, script: typecheck }
+          - { name: Build, script: build }
+          - { name: Test, script: test }
     steps:
       - uses: actions/checkout@v4
       - run: corepack enable
@@ -22,10 +30,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run lint
-      - run: pnpm run typecheck
-      - run: pnpm run build
-      - run: pnpm test
+      - run: pnpm run ${{ matrix.script }}
 
   runtime:
     name: CMS runtime (${{ matrix.os }})
