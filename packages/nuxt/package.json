@@ -1,6 +1,6 @@
 {
   "name": "@joebailey26/nuxt-static-wordpress",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Nuxt module that loads a static-wordpress CMS feed at build time, with Cloudflare Image Transformations",
   "repository": {
     "type": "git",
