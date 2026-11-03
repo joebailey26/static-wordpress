@@ -34,6 +34,12 @@ test('srcset is capped at the image width and dimensions are kept', () => {
   assert.match(html, /width="1000" height="500"/)
 })
 
+test('the editor\'s size, class and title are kept', () => {
+  production()
+  const html = prepareImages(`<img src="${media}" width="596" height="166" class="wp-image-863" style="width:300px" title="Turnstile">`)
+  assert.match(html, /width="596" height="166" class="wp-image-863" style="width:300px" title="Turnstile"/)
+})
+
 test('non-CMS, SVG and GIF images are left alone', () => {
   production()
   for (const src of ['https://example.com/a.jpg', 'https://cms.joebailey.xyz/media/a/logo.svg', 'https://cms.joebailey.xyz/media/a/anim.GIF']) {

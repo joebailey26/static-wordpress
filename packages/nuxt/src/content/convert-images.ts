@@ -54,9 +54,10 @@ export function prepareImages (postContent: string, { sizes = '(min-width: 1200p
     img.attr('decoding', 'async')
     img.attr('loading', 'lazy')
     img.attr('alt', $img.attr('alt') || '')
-    for (const dimension of ['width', 'height']) {
-      if ($img.attr(dimension)) {
-        img.attr(dimension, $img.attr(dimension))
+    // The editor sizes and aligns images with these, e.g. style="width:300px" on a resized image block.
+    for (const attribute of ['width', 'height', 'class', 'style', 'title']) {
+      if ($img.attr(attribute)) {
+        img.attr(attribute, $img.attr(attribute))
       }
     }
     $img.replaceWith($('<picture>').append(img))
