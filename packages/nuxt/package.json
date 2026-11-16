@@ -58,7 +58,7 @@
   },
   "peerDependencies": {
     "@torchlight-api/client": "^0.0.4",
-    "nuxt": "^4.6.2"
+    "nuxt": "^4.6.4"
   },
   "peerDependenciesMeta": {
     "@torchlight-api/client": {
@@ -74,7 +74,7 @@
   "devDependencies": {
     "@nuxt/module-builder": "^1.0.2",
     "@nuxt/schema": "^4.6.2",
-    "nuxt": "^4.6.2",
+    "nuxt": "^4.6.4",
     "h3": "^1.15.4",
     "@types/he": "^1.2.3",
     "@types/node": "^24.19.2",
